@@ -1,17 +1,15 @@
-from fastapi import FastAPI, UploadFile, File, Form
+# FULL FASTAPI BACKEND WITH LOGIN/SIGNUP SUPPORT
+from fastapi import FastAPI, UploadFile, File, Form, Query, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 import numpy as np
 import cv2
 import datetime
 import sqlite3
 import os
 import pickle
+from passlib.context import CryptContext
 from recognizer import ImageEncoder, FaceAuthenticator
 from logger import logger
-from fastapi.middleware.cors import CORSMiddleware
-# from fastapi import Query
-from fastapi import Query, HTTPException
-from passlib.context import CryptContext
-
 
 encoder = ImageEncoder()
 auth = FaceAuthenticator()
@@ -22,10 +20,9 @@ PKL_PATH = "encodings.pkl"
 IMAGE_DIR = "registered_images"
 os.makedirs(IMAGE_DIR, exist_ok=True)
 
-# Allow requests from frontend origin
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # or ["*"] to allow all
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -60,22 +57,36 @@ def init_db():
         )
     ''')
 
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE,
+            hashed_password TEXT
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS login_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT,
+            login_time TEXT
+        )
+    ''')
+
     conn.commit()
     conn.close()
 
-    # Create empty pickle file if not exists
     if not os.path.exists(PKL_PATH):
         with open(PKL_PATH, 'wb') as f:
             pickle.dump({}, f)
 
 init_db()
 
-# --- Load Encodings ---
+# --- Helpers ---
 def load_encodings():
     with open(PKL_PATH, 'rb') as f:
         return pickle.load(f)
 
-# --- Save Encodings ---
 def save_encodings(data):
     with open(PKL_PATH, 'wb') as f:
         pickle.dump(data, f)
@@ -85,6 +96,49 @@ def hash_password(password: str) -> str:
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
+
+# --- Signup ---
+@app.post("/signup")
+def signup(username: str = Form(...), password: str = Form(...)):
+    try:
+        conn = sqlite3.connect("attendance.db")
+        cursor = conn.cursor()
+        hashed_pw = hash_password(password)
+        cursor.execute("INSERT INTO users (username, hashed_password) VALUES (?, ?)", (username, hashed_pw))
+        conn.commit()
+        conn.close()
+        return {"message": "Signup successful"}
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=400, detail="Username already exists")
+    except Exception as e:
+        logger.error(f"/signup -> {e}")
+        raise HTTPException(status_code=500, detail="Signup failed")
+
+# --- Login ---
+@app.post("/login")
+# def login(username: str = Form(...), password: str = Form(...)):
+async def login_user(username: str = Form(...), password: str = Form(...)):
+
+    try:
+        conn = sqlite3.connect("attendance.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT hashed_password FROM users WHERE username = ?", (username,))
+        row = cursor.fetchone()
+
+        if not row:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+
+        if not verify_password(password, row[0]):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+
+        cursor.execute("INSERT INTO login_history (username, login_time) VALUES (?, ?)", (username, datetime.datetime.now().isoformat()))
+        conn.commit()
+        conn.close()
+        return {"message": "Login successful"}
+
+    except Exception as e:
+        logger.error(f"/login -> {e}")
+        raise HTTPException(status_code=500, detail="Login failed")
 
 # --- API to Register Employee ---
 @app.post("/register")
