@@ -1,8 +1,0 @@
-face-recognition
-face-recognition-models
-fastapi
-opencv-python
-Pillow
-uvicorn
-python-multipart
-
